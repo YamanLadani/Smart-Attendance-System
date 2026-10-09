@@ -16,7 +16,6 @@ import {
   Sparkles,
   Keyboard,
   UploadCloud,
-  QrCode,
 } from 'lucide-react';
 import { toast } from 'react-toastify';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -33,10 +32,12 @@ export default function ScanQRPage() {
   const stopScanner = useCallback(async () => {
     if (scannerRef.current) {
       try {
-        await scannerRef.current.stop();
+        if (scannerRef.current.isScanning) {
+          await scannerRef.current.stop();
+        }
         scannerRef.current.clear();
       } catch {
-        /* ignore */
+        /* ignore cleanup errors */
       }
       scannerRef.current = null;
     }
@@ -59,75 +60,64 @@ export default function ScanQRPage() {
     }
   }, [stopScanner]);
 
-  const startScanner = () => {
+  const startScanner = async () => {
     setState('scanning');
-  };
 
-  // Mount scanner after React finishes DOM rendering of #qr-reader
-  useEffect(() => {
-    if (state !== 'scanning') return;
-
-    let isMounted = true;
-    let localScanner: Html5Qrcode | null = null;
-
-    const initCamera = async () => {
+    // Give DOM a frame to ensure #qr-reader is ready
+    setTimeout(async () => {
       try {
-        localScanner = new Html5Qrcode('qr-reader');
-        scannerRef.current = localScanner;
+        await stopScanner();
+        const scanner = new Html5Qrcode('qr-reader');
+        scannerRef.current = scanner;
 
-        // Try environment (back) camera first
-        try {
-          await localScanner.start(
-            { facingMode: 'environment' },
+        // Try to enumerate cameras to pick best device
+        const cameras = await Html5Qrcode.getCameras().catch(() => []);
+
+        if (cameras && cameras.length > 0) {
+          // Look for rear/environment camera first, otherwise pick the first available (webcam)
+          const backCam = cameras.find((cam) =>
+            cam.label?.toLowerCase().includes('back') ||
+            cam.label?.toLowerCase().includes('rear') ||
+            cam.label?.toLowerCase().includes('environment')
+          );
+          const selectedId = backCam?.id || cameras[0]?.id || '';
+
+          await scanner.start(
+            selectedId,
             { fps: 10, qrbox: { width: 250, height: 250 } },
             async (decodedText) => {
-              if (isMounted) await handleMarkWithData(decodedText);
+              await handleMarkWithData(decodedText);
             },
             () => {}
           );
-        } catch (backCamErr: any) {
-          const devices = await Html5Qrcode.getCameras();
-          if (devices && devices.length > 0 && devices[0]?.id) {
-            const cameraId = devices[0].id;
-            await localScanner.start(
-              cameraId,
-              { fps: 10, qrbox: { width: 250, height: 250 } },
-              async (decodedText) => {
-                if (isMounted) await handleMarkWithData(decodedText);
-              },
-              () => {}
-            );
-          } else {
-            throw backCamErr;
-          }
+        } else {
+          // Fallback to standard constraints
+          await scanner.start(
+            { facingMode: 'user' },
+            { fps: 10, qrbox: { width: 250, height: 250 } },
+            async (decodedText) => {
+              await handleMarkWithData(decodedText);
+            },
+            () => {}
+          );
         }
       } catch (err: any) {
-        if (!isMounted) return;
         console.error('Camera startup error:', err);
         setState('error');
         const errString = String(err?.name || err?.message || err || '');
         if (errString.includes('NotAllowedError') || errString.includes('Permission')) {
           setMessage('Camera permission was denied in your browser. Please click the Lock/Camera icon in your address bar and select "Allow Camera".');
-          toast.error('Camera permission denied. Allow camera in browser.');
+          toast.error('Camera permission denied.');
         } else if (errString.includes('NotFoundError') || errString.includes('DevicesNotFoundError')) {
-          setMessage('No webcam or camera hardware was detected on this device. You can use the "Manual Code Entry" or "Upload Image" tab below!');
+          setMessage('No camera/webcam hardware was detected on this device. You can use the "Manual Code Entry" or "Upload Image" tab below!');
           toast.info('No webcam detected on this device');
         } else {
           setMessage(err?.message || 'Could not access the camera. You can use the "Manual Code Entry" or "Upload Image" tab below to mark attendance!');
           toast.error('Camera unavailable');
         }
       }
-    };
-
-    initCamera();
-
-    return () => {
-      isMounted = false;
-      if (localScanner && localScanner.isScanning) {
-        localScanner.stop().catch(() => {});
-      }
-    };
-  }, [state, handleMarkWithData]);
+    }, 60);
+  };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -139,7 +129,7 @@ export default function ScanQRPage() {
       const decodedText = await html5QrCode.scanFile(file, true);
       html5QrCode.clear();
       await handleMarkWithData(decodedText);
-    } catch (err) {
+    } catch {
       setState('error');
       setMessage('Could not detect a valid QR code in this image. Please try again or enter the code manually.');
       toast.error('QR code not found in image');
@@ -154,6 +144,12 @@ export default function ScanQRPage() {
     }
     await handleMarkWithData(manualCode.trim());
   };
+
+  useEffect(() => {
+    return () => {
+      stopScanner();
+    };
+  }, [stopScanner]);
 
   const reset = async () => {
     await stopScanner();
@@ -180,6 +176,27 @@ export default function ScanQRPage() {
           </div>
 
           <CardContent className="p-6">
+            {/* Permanent Stable Container for Html5Qrcode scanner */}
+            <div
+              id="qr-reader"
+              className={`rounded-2xl overflow-hidden ring-2 ring-primary/20 w-full mb-4 bg-black/95 ${
+                state === 'scanning' ? 'block' : 'hidden'
+              }`}
+            />
+            <div id="qr-file-reader" className="hidden" />
+
+            {/* Scanning View Controls */}
+            {state === 'scanning' && (
+              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-4">
+                <p className="text-center text-xs text-muted-foreground animate-pulse flex items-center justify-center gap-2">
+                  <Sparkles className="w-3.5 h-3.5 text-primary" /> Scanning for QR code...
+                </p>
+                <Button variant="outline" onClick={reset} className="w-full rounded-xl">
+                  <CameraOff className="mr-2 h-4 w-4" /> Cancel Camera
+                </Button>
+              </motion.div>
+            )}
+
             <AnimatePresence mode="wait">
               {state === 'idle' && (
                 <motion.div key="idle" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
@@ -242,7 +259,6 @@ export default function ScanQRPage() {
 
                     {/* File Upload Tab */}
                     <TabsContent value="upload" className="text-center py-4 space-y-4">
-                      <div id="qr-file-reader" className="hidden" />
                       <div
                         onClick={() => fileInputRef.current?.click()}
                         className="w-full p-8 border-2 border-dashed border-border rounded-2xl cursor-pointer hover:border-primary/50 hover:bg-secondary/40 transition-colors flex flex-col items-center justify-center gap-2"
@@ -260,18 +276,6 @@ export default function ScanQRPage() {
                       />
                     </TabsContent>
                   </Tabs>
-                </motion.div>
-              )}
-
-              {state === 'scanning' && (
-                <motion.div key="scanning" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-4">
-                  <div id="qr-reader" className="rounded-2xl overflow-hidden ring-2 ring-primary/20" />
-                  <p className="text-center text-xs text-muted-foreground animate-pulse flex items-center justify-center gap-2">
-                    <Sparkles className="w-3.5 h-3.5 text-primary" /> Scanning for QR code...
-                  </p>
-                  <Button variant="outline" onClick={reset} className="w-full rounded-xl">
-                    <CameraOff className="mr-2 h-4 w-4" /> Cancel Camera
-                  </Button>
                 </motion.div>
               )}
 
