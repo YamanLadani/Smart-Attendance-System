@@ -42,7 +42,7 @@ export default function ScanQRPage() {
     }
   }, []);
 
-  const handleMarkWithData = async (payload: string) => {
+  const handleMarkWithData = useCallback(async (payload: string) => {
     setState('processing');
     await stopScanner();
     try {
@@ -57,27 +57,77 @@ export default function ScanQRPage() {
       setMessage(errorMsg);
       toast.error(errorMsg);
     }
+  }, [stopScanner]);
+
+  const startScanner = () => {
+    setState('scanning');
   };
 
-  const startScanner = async () => {
-    setState('scanning');
-    try {
-      const scanner = new Html5Qrcode('qr-reader');
-      scannerRef.current = scanner;
-      await scanner.start(
-        { facingMode: 'environment' },
-        { fps: 10, qrbox: { width: 250, height: 250 } },
-        async (decodedText) => {
-          await handleMarkWithData(decodedText);
-        },
-        () => { }
-      );
-    } catch {
-      setState('error');
-      setMessage('Camera access denied or no webcam detected on this device. You can use the "Manual Code Entry" or "Upload Image" tab below to mark attendance!');
-      toast.error('Camera access denied');
-    }
-  };
+  // Mount scanner after React finishes DOM rendering of #qr-reader
+  useEffect(() => {
+    if (state !== 'scanning') return;
+
+    let isMounted = true;
+    let localScanner: Html5Qrcode | null = null;
+
+    const initCamera = async () => {
+      try {
+        localScanner = new Html5Qrcode('qr-reader');
+        scannerRef.current = localScanner;
+
+        // Try environment (back) camera first
+        try {
+          await localScanner.start(
+            { facingMode: 'environment' },
+            { fps: 10, qrbox: { width: 250, height: 250 } },
+            async (decodedText) => {
+              if (isMounted) await handleMarkWithData(decodedText);
+            },
+            () => {}
+          );
+        } catch (backCamErr: any) {
+          const devices = await Html5Qrcode.getCameras();
+          if (devices && devices.length > 0 && devices[0]?.id) {
+            const cameraId = devices[0].id;
+            await localScanner.start(
+              cameraId,
+              { fps: 10, qrbox: { width: 250, height: 250 } },
+              async (decodedText) => {
+                if (isMounted) await handleMarkWithData(decodedText);
+              },
+              () => {}
+            );
+          } else {
+            throw backCamErr;
+          }
+        }
+      } catch (err: any) {
+        if (!isMounted) return;
+        console.error('Camera startup error:', err);
+        setState('error');
+        const errString = String(err?.name || err?.message || err || '');
+        if (errString.includes('NotAllowedError') || errString.includes('Permission')) {
+          setMessage('Camera permission was denied in your browser. Please click the Lock/Camera icon in your address bar and select "Allow Camera".');
+          toast.error('Camera permission denied. Allow camera in browser.');
+        } else if (errString.includes('NotFoundError') || errString.includes('DevicesNotFoundError')) {
+          setMessage('No webcam or camera hardware was detected on this device. You can use the "Manual Code Entry" or "Upload Image" tab below!');
+          toast.info('No webcam detected on this device');
+        } else {
+          setMessage(err?.message || 'Could not access the camera. You can use the "Manual Code Entry" or "Upload Image" tab below to mark attendance!');
+          toast.error('Camera unavailable');
+        }
+      }
+    };
+
+    initCamera();
+
+    return () => {
+      isMounted = false;
+      if (localScanner && localScanner.isScanning) {
+        localScanner.stop().catch(() => {});
+      }
+    };
+  }, [state, handleMarkWithData]);
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -104,12 +154,6 @@ export default function ScanQRPage() {
     }
     await handleMarkWithData(manualCode.trim());
   };
-
-  useEffect(() => {
-    return () => {
-      stopScanner();
-    };
-  }, [stopScanner]);
 
   const reset = async () => {
     await stopScanner();
