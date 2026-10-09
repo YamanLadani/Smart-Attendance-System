@@ -1,0 +1,41 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+
+# Environment
+.env
+.env.local
+.env.production
+
+# Firebase
+*-firebase-adminsdk-*.json
+serviceAccountKey.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Capacitor
+android/app/build/
+android/.gradle/
+*.apk
+
+# Coverage
+coverage/
+
+# Uploads
+uploads/
+backend/uploads/
